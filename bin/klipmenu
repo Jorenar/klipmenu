@@ -1,0 +1,120 @@
+#!/usr/bin/env sh
+
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2024 Jorenar
+
+
+delete=0
+nocopy=0
+stdout=0
+selection="clipboard"
+menuprg="${KM_LAUNCHER:-"dmenu"}"
+KM_HISTLENGTH="${KM_HISTLENGTH:-8}"
+
+usage () {
+    cat << 'EOF'
+Usage: klipmenu [OPTIONS]... -- [dmenu OPTIONS]...
+
+Options:
+  -h, --help       display this message and exit
+  -s, --selection  choose selection to copy from
+                     available: 'clipboard', 'primary'
+                     default:   'clipboard'
+  --stdout         print the selected entry to stdout
+  --nocopy         do not copy the selected entry to clipboard
+  --delete         delete entry from history after selecting (implies --nocopy)
+  --menuprg        specify a dmenu-compatible program
+                     default: dmenu
+
+Environment variables:
+  $KM_DIR          specify the base directory to store the cache dir in (default: $XDG_RUNTIME_DIR, $TMPDIR, or /tmp)
+  $KM_HISTLENGTH   specify the number of briefs to show in dmenu/rofi (default: 8)
+  $KM_MENUPRG      specify a dmenu-compatible launcher (default: dmenu)
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|-\?|--help)
+            usage
+            exit
+            ;;
+        -s|--selection)
+            selection="$2"
+            shift
+            ;;
+        --menuprg)
+            menuprg="$2"
+            shift
+            ;;
+        --stdout)
+            stdout=1
+            ;;
+        --nocopy)
+            nocopy=1
+            ;;
+        --delete)
+            delete=1
+            nocopy=1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -?*)
+            >&2 printf 'WARN: Unknown option (ignored): %s\n' "$1"
+            ;;
+        *) ;;
+    esac
+    shift
+done
+
+
+dir="$(klipctl dir)"
+list_file="$dir/sel/$selection"
+
+case "$menuprg" in
+    dmenu|rofi) set -- -p "klipmenu" "-l" "$KM_HISTLENGTH" "$@" ;;
+esac
+[ "$menuprg" = "rofi" ] && set -- -dmenu "$@"
+
+list="$(
+    {
+        LC_ALL=C
+        awk '{a[i++]=$0} END {for (j=i-1; j>=0;) print a[j--] }' |\
+            awk '!seen[$0]++'
+    } < "$list_file"
+)"
+briefs="$(
+    printf '%s' "$list" | cut -d']' -f2- | awk '{printf "%3d:%s\n", NR, $0}'
+)"
+cksums="$(
+    printf '%s' "$list" | cut -d']' -f1 | tr -d '[' | awk '{printf "%3d:%s\n", NR, $0}'
+)"
+
+idx="$(echo "$briefs" | "$menuprg" "$@")"
+launcher_exit=$?
+
+idx="$(echo "$idx" | cut -d':' -f1)"
+[ -n "$idx" ] || exit 1
+
+cksum="$(printf '%s\n' "$cksums" | grep "^$idx:" | cut -d':' -f2-)"
+
+file="$dir/clips/$cksum"
+[ -f "$file" ] || exit 2
+
+if [ "$nocopy" -eq 0 ]; then
+    _klipclip -i "$selection" < "$file"
+fi
+
+if [ "$stdout" -gt 0 ]; then
+    cat "$file"
+fi
+
+if [ "$delete" -gt 0 ]; then
+    grep -v -F "$cksum" "$list_file" > "$list_file".tmp2 && \
+        mv "$list_file".tmp2 "$list_file"
+    rm "$file"
+fi
+
+exit "${launcher_exit:-"$?"}"

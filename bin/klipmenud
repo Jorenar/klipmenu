@@ -1,0 +1,341 @@
+#!/usr/bin/env sh
+
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2024      Jorenar
+# Copyright (c) 2014-2022 Christopher Down
+
+KM_DEBUG="${KM_DEBUG:-0}"
+KM_MAX_CLIPS="${KM_MAX_CLIPS:-1000}"
+KM_OWN_CLIPBOARD="${KM_OWN_CLIPBOARD:-0}"
+KM_SELECTIONS="${KM_SELECTIONS:-"clipboard primary"}"
+KM_SYNC_CLIPBOARD_TO_PRIMARY="${KM_SYNC_CLIPBOARD_TO_PRIMARY:-0}"
+KM_SYNC_PRIMARY_TO_CLIPBOARD="${KM_SYNC_PRIMARY_TO_CLIPBOARD:-0}"
+
+
+klipdir="$(klipctl dir)"
+session_file="$klipdir/session"
+status_file="$klipdir/status"
+
+gf_trapped=0
+
+
+usage () {
+    cat << 'EOF'
+klipmenud collects and caches what's on the clipboard.
+You can manage its operation with klipctl.
+
+Environment variables:
+  $KM_DIR                        the directory to store operational data in
+                                    default: $XDG_RUNTIME_DIR/klipmenu, or $TMPDIR/klipmenu-$USER
+  $KM_MAX_CLIPS                  soft maximum number of clips to store, 0 for inf.
+                                    default: 1000
+  $KM_OWN_CLIPBOARD              take ownership of the clipboard
+                                 (may cause missed copies if some other application
+                                  also handles the clipboard directly)
+                                    default: 0
+  $KM_SELECTIONS                 space separated list of the selections to manage
+                                    default: "clipboard primary"
+  $KM_SYNC_PRIMARY_TO_CLIPBOARD  sync selections from primary to clipboard immediately
+                                    default: 0
+  $KM_SYNC_CLIPBOARD_TO_PRIMARY  sync selections from clipboard to primary immediately
+                                    default: 0
+  $KM_IGNORE_WINDOW              disable recording the clipboard in windows
+                                 where the windowname matches the given regex
+                                 (e.g. a password manager)
+                                 does not ignore any windows if unset or empty
+                                    default: unset
+EOF
+}
+
+case "$1" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    ?)
+        die 1 "unknown: $1"
+        ;;
+esac
+
+
+debug() {
+    [ "$KM_DEBUG" -eq 0 ] && return
+    >&2 printf 'debug: %s\n' "$@"
+}
+
+info () {
+    >&2 printf 'info: %s\n' "$@"
+}
+
+warn() {
+    >&2 printf 'warn: %s\n' "$@"
+}
+
+error() {
+    >&2 printf 'error: %s\n' "$@"
+}
+
+die () {
+    error "$2"
+    exit "$1"
+}
+
+get_first_line () {
+    data=${1?}
+
+    # We look for the first line matching regex /./ here because we want the
+    # first line that can provide reasonable context to the user.
+    printf '%s' "$data" | awk -v limit=300 '
+        BEGIN { printed = 0; }
+        printed == 0 && NF {
+            $0 = substr($0, 0, limit);
+            printf("%s", $0);
+            printed = 1;
+        }
+        END {
+            if (NR > 1)
+                printf(" (%d lines)", NR);
+            printf("\n");
+        }'
+}
+
+compile_klip_notify () {
+    cc=
+    [ -x "$(command -v c99)" ] && cc="c99"
+    [ -x "$(command -v c17)" ] && cc="c17"
+    [ -x "$(command -v cc)"  ] && cc="cc"
+    [ -z "$cc" ] && return 1
+
+    cat > "$klipdir"/klip_notify.c << 'EOF'
+#include <string.h>
+#include <X11/X.h>
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/xfixeswire.h>
+
+int main(int argc, char *argv[])
+{
+    Display *disp;
+    Window root;
+    XEvent evt;
+
+    disp = XOpenDisplay(NULL);
+    if (!disp) return 1;
+    root = DefaultRootWindow(disp);
+
+    XFixesSelectSelectionInput(disp, root,
+        ((argc > 1 && strcmp(argv[1], "primary") == 0)
+         ? XA_PRIMARY : XInternAtom(disp, "CLIPBOARD", False)),
+        XFixesSetSelectionOwnerNotifyMask);
+
+    XNextEvent(disp, &evt);
+    XCloseDisplay(disp);
+    return 0;
+}
+EOF
+
+    xlibs='-lX11 -lXfixes'
+    if [ -x "$(command -v pkg-config)" ]; then
+        xlibs="$(pkg-config --cflags --libs x11 xfixes)"
+    fi
+
+    # shellcheck disable=SC2086
+    $cc -o "$klipdir"/klip_notify "$klipdir"/klip_notify.c $xlibs \
+        || return 1
+    rm "$klipdir"/klip_notify.c
+}
+
+sig_disable () {
+    info "received disable signal"
+    echo "disabled" > "$status_file"
+}
+
+sig_enable () {
+    info "received enable signal"
+    echo "enabled" > "$status_file"
+}
+
+
+if [ -e "$session_file" ]; then
+    warn 'another klipmenud already running; exiting'
+    exit 0
+fi
+
+if [ -z "$DISPLAY$WAYLAND_DISPLAY" ]; then
+    die 2 'The display is unset, is your X server or Wayland running?'
+fi
+
+xdotool=
+if [ -n "$WAYLAND_DISPLAY" ] && [ -x "$(command -v ydotool)" ]; then
+    xdotool="ydotool"
+elif [ -n "$DISPLAY" ] && [ -x "$(command -v xdotool)" ]; then
+    xdotool="xdotool"
+fi
+
+if [ -n "$KM_IGNORE_WINDOW" ] && [ -z "$xdotool" ]; then
+    warn 'KM_IGNORE_WINDOW does not work without xdotool, which is not installed'
+fi
+
+
+mkdir -p -m 0700 \
+    "$klipdir"     \
+    "$klipdir/sel" \
+    "$klipdir/clips"
+
+if [ -n "$WAYLAND_DISPLAY" ] && [ -x "$(command -v wl-paste)" ]; then
+    trigger () {
+        unset arg; [ "$1" = "primary" ] && export arg='--primary'
+        export prev="$(wl-paste $arg -n | cksum)"
+        exec sh << 'EOF'
+exec wl-paste $arg -w sh -c '[ "$(cat|cksum)" != "$prev" ] && kill -s TERM '"$$"
+EOF
+    }
+elif [ -n "$DISPLAY" ]; then
+    if [ -x "$(command -v clipnotify)" ]; then
+        trigger () {
+            clipnotify -s "$1"
+        }
+    else
+        if compile_klip_notify; then
+            trigger () {
+                [ "$1" != "primary" ] && set -- ''
+                "$klipdir"/klip_notify "$1"
+            }
+        else
+            trigger () {
+                sleep 1
+            }
+        fi
+    fi
+fi
+
+
+gc () {
+    for file in "$klipdir"/clips/*; do
+        if ! grep -q -F "[$(basename "$file")]" "$klipdir"/sel/*; then
+            rm "$file"
+        fi
+    done
+}
+
+save () {
+    list="$1"
+    data="$2"
+    cksum="$3"
+
+    while [ -e "$list".lock ]; do sleep 1; done
+    touch "$list".lock
+
+    printf '%s' "$data" > "$klipdir/clips/$cksum"
+
+    first_line="$(get_first_line "$data")" # TODO
+    debug "new clipboard entry on $selection selection: \"$first_line\""
+    printf '[%s] %s\n' "$cksum" "$first_line" >> "$list"
+
+    if [ "$KM_MAX_CLIPS" -gt 0 ]; then
+        tail -n "$KM_MAX_CLIPS" "$list" > "$list".tmp && \
+            mv "$list".tmp "$list"
+        gc &
+    fi
+
+    rm "$list".lock
+}
+
+monitor () {
+    selection="$1"
+    last_cksum=""
+    list="$klipdir/sel/${selection}"
+    trigger_pid=
+
+    while :; do
+
+        # Make sure we're interruptible for the sig_{en,dis}able traps
+        if [ -z "$trigger_pid" ]; then
+            trigger "$selection" &
+            trigger_pid="$!"
+        fi
+        if wait "$trigger_pid" 2> /dev/null || [ "$(kill -l $?)" = "TERM" ]; then
+            trigger_pid=
+        else
+            # Trapping a signal breaks the `wait`
+            if [ "$gf_trapped" -gt 0 ]; then
+                gf_trapped=0
+            else
+                # not trapped? display dead?
+                sleep 10
+            fi
+            continue
+        fi
+
+        data="$(_klipclip "$selection"; echo '.')"
+        data="${data%.}"  # avoid trailing newlines being stripped
+
+        [ -z "$data" ] && continue
+
+        cksum="$(printf '%s' "$data" | cksum)"
+
+        if [ "$cksum" = "$last_cksum" ]; then
+            data=
+            continue
+        fi
+        last_cksum="$cksum"
+
+        if [ "$(cat "$status_file")" != "enabled" ]; then
+            continue
+        fi
+
+        if [ -n "$KM_IGNORE_WINDOW" ] && [ -n "$xdotool" ]; then # TODO
+            windowname="$($xdotool getactivewindow getwindowname)"
+            case "$windowname" in
+                $KM_IGNORE_WINDOW)
+                    debug "ignoring clipboard because windowname \"$windowname\" matches \"${KM_IGNORE_WINDOW}\""
+                    continue
+                    ;;
+            esac
+        fi
+
+        save "$list" "$data" "$cksum"
+        data=
+
+        if [ "$KM_OWN_CLIPBOARD" -gt 0 ] && [ "$selection" = "clipboard" ]; then
+            # Only clipboard, since apps like URxvt will unhilight for PRIMARY
+            _klipclip -o clipboard | _klipclip -i clipboard
+        fi
+
+        case "$selection" in
+            primary)
+                [ "${KM_SYNC_PRIMARY_TO_CLIPBOARD:-0}" -gt 0 ] && \
+                    _klipclip -o primary | _klipclip -i clipboard
+                ;;
+            clipboard)
+                [ "${KM_SYNC_CLIPBOARD_TO_PRIMARY:-0}" -gt 0 ] && \
+                    _klipclip clipboard | _klipclip -i primary
+                ;;
+        esac
+
+    done
+}
+
+
+echo "$$" > "$session_file"
+echo "enabled" > "$status_file"
+
+trap 'gf_trapped=1; sig_disable' USR1
+trap 'gf_trapped=1; sig_enable'  USR2
+
+
+cleanup () {
+    trap - INT TERM EXIT
+    find "$klipdir" -name '*.lock' -exec rm {} \;
+    rm "$session_file"
+    kill -- -$$
+}
+
+trap 'cleanup' INT TERM EXIT
+
+for sel in $KM_SELECTIONS; do
+    monitor "$sel" &
+done
+
+while :; do wait; done

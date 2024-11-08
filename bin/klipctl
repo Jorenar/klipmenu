@@ -1,0 +1,83 @@
+#!/usr/bin/env sh
+
+# SPDX-License-Identifier: MIT
+# Copyright 2024 Jorenar
+
+usage () {
+    cat << 'EOF'
+Usage: klipctl [COMMAND]
+Controls for the klipmenud daemon.
+
+Commands:
+    help       display this message and exit
+    enable     enable clip collection
+    disable    disable clip collection
+    status     returns "enabled" or "disabled"
+    toggle     toggles clip collection
+    version    returns major version
+    dir        returns the directory used for processing
+EOF
+}
+
+case "$1" in
+    ''|help|--help|-h) usage; exit 0 ;;
+esac
+
+dir=
+if [ -n "$KM_DIR" ]; then
+    dir="$KM_DIR"
+elif [ -d "$XDG_RUNTIME_DIR" ]; then
+    dir="$XDG_RUNTIME_DIR/klipmenu"
+else
+    dir="${TMPDIR:-"/tmp"}/klipmenu-$(id -un)"
+fi
+
+
+version="1.0.0"
+
+klipmenud_pid="$(cat "$dir"/session 2> /dev/null)"
+
+case "$1" in
+    enable|disable|toggle|status)
+        if [ -z "$klipmenud_pid" ]; then
+            >&2 echo "klipmenud is not running"
+            exit 2
+        fi
+        ;;
+esac
+
+status="$(cat "$dir"/status 2> /dev/null)"
+
+case "$1" in
+    status)  exec echo "$status" ;;
+    version) exec echo "$version" ;;
+    dir)     exec echo "$dir" ;;
+    enable|disable|toggle) ;;
+    *)
+        >&2 printf 'Unknown command: %s\n' "$1"
+        usage
+        exit 1
+    ;;
+esac
+
+if [ -z "$status" ]; then
+    :
+elif [ "$status" = "enabled" ]; then
+    case "$1" in
+        toggle|disable)
+            kill -USR1 "$klipmenud_pid"
+            ;;
+        enable)
+            >&2 echo "already enabled"
+            ;;
+    esac
+elif [ "$status" = "disabled" ]; then
+    case "$1" in
+        toggle|enable)
+            kill -USR2 "$klipmenud_pid"
+            ;;
+        disable)
+            >&2 echo "already disabled"
+            ;;
+    esac
+fi

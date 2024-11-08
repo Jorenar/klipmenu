@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+
+# SPDX-License-Identifier: MIT
+# Copyright 2024 Jorenar
+
+io=
+primary=
+
+if [ "$1" = "-o" ]; then
+    io='-o'
+    shift
+fi
+
+if [ "$1" = "-i" ]; then
+    io='-i'
+    shift
+fi
+
+if [ "$1" = "primary" ]; then
+    primary="--primary"
+    shift
+fi
+
+if [ -n "$WAYLAND_DISPLAY" ] && [ -x "$(command -v wl-paste)" ]; then
+    if [ "$io" = "-i" ]; then
+        wl-copy $primary
+    else
+        wl-paste $primary
+    fi
+elif [ -n "$DISPLAY" ]; then
+    if [ -x "$(command -v xclip)" ]; then
+        if [ -z "$primary" ]; then
+            xclip $io -selection clipboard
+        else
+            xclip $io
+        fi
+    elif [ -x "$(command -v xsel)" ]; then
+        xsel $io $primary
+    fi
+fi
