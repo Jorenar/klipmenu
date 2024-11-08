@@ -12,15 +12,6 @@ Greatly influenced by [cdown/clipmenu](https://github.com/cdown/clipmenu/tree/97
 You first need to launch the `klipmenud` daemon, it will monitor changes
 to the clipboard and cache them in the manager's operational directory.
 
-SystemD service file `klipmenud.service` is included as part of the project.
-
-If your desktop environment doesn't do it automatically, you must import
-`$DISPLAY` so that `klipmenud` knows which X server to use. For example,
-in your `~/.xinitrc` do this prior to launching `klipmenud`:
-```
-systemctl --user import-environment DISPLAY
-```
-
 ## `klipmenu`
 
 You may wish to bind a shortcut in your window manager to launch `klipmenu`.
