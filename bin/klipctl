@@ -38,7 +38,7 @@ version="1.0.0"
 klipmenud_pid="$(cat "$dir"/session 2> /dev/null)"
 
 case "$1" in
-    enable|disable|toggle|status)
+    enable|toggle)
         if [ -z "$klipmenud_pid" ]; then
             >&2 echo "klipmenud is not running"
             exit 2
@@ -46,7 +46,8 @@ case "$1" in
         ;;
 esac
 
-status="$(cat "$dir"/status 2> /dev/null)"
+[ -z "$klipmenud_pid" ] && status="off" || \
+    status="$(cat "$dir"/status 2> /dev/null)"
 
 case "$1" in
     status)  exec echo "$status" ;;

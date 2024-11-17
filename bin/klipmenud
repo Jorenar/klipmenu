@@ -328,6 +328,7 @@ trap 'gf_trapped=1; sig_enable'  USR2
 cleanup () {
     trap - INT TERM EXIT
     find "$klipdir" -name '*.lock' -exec rm {} \;
+    rm "$status_file"
     rm "$session_file"
     kill -- -$$
 }
