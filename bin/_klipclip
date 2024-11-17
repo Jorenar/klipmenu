@@ -23,9 +23,9 @@ fi
 
 if [ -n "$WAYLAND_DISPLAY" ] && [ -x "$(command -v wl-paste)" ]; then
     if [ "$io" = "-i" ]; then
-        wl-copy $primary
+        wl-copy -n $primary
     else
-        wl-paste $primary
+        wl-paste -n $primary
     fi
 elif [ -n "$DISPLAY" ]; then
     if [ -x "$(command -v xclip)" ]; then
