@@ -17,6 +17,7 @@ session_file="$klipdir/session"
 status_file="$klipdir/status"
 
 gf_trapped=0
+gf_restart=0
 
 
 usage () {
@@ -51,6 +52,9 @@ case "$1" in
     -h|--help)
         usage
         exit 0
+        ;;
+    --restart)
+        gf_restart=1
         ;;
     ?)
         die 1 "unknown: $1"
@@ -158,8 +162,15 @@ sig_enable () {
 
 
 if [ -e "$session_file" ]; then
-    warn 'another klipmenud already running; exiting'
-    exit 0
+    warn 'another klipmenud already running'
+    if [ "$gf_restart" -eq 0 ]; then
+        warn 'exiting'
+        exit 0
+    else
+        kill "$(cat "$session_file")"
+        while [ -e "$session_file" ]; do sleep 0; done
+        warn 'closing previous one'
+    fi
 fi
 
 if [ -z "$DISPLAY$WAYLAND_DISPLAY" ]; then
