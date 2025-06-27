@@ -177,15 +177,9 @@ if [ -z "$DISPLAY$WAYLAND_DISPLAY" ]; then
     die 2 'The display is unset, is your X server or Wayland running?'
 fi
 
-xdotool=
-if [ -n "$WAYLAND_DISPLAY" ] && [ -x "$(command -v ydotool)" ]; then
-    xdotool="ydotool"
-elif [ -n "$DISPLAY" ] && [ -x "$(command -v xdotool)" ]; then
-    xdotool="xdotool"
-fi
-
-if [ -n "$KM_IGNORE_WINDOW" ] && [ -z "$xdotool" ]; then
+if [ -n "$KM_IGNORE_WINDOW" ] && [ -x "$(command -v xdotool)" ]; then
     warn 'KM_IGNORE_WINDOW does not work without xdotool, which is not installed'
+    KM_IGNORE_WINDOW=
 fi
 
 
@@ -296,8 +290,8 @@ monitor () {
             continue
         fi
 
-        if [ -n "$KM_IGNORE_WINDOW" ] && [ -n "$xdotool" ]; then # TODO
-            windowname="$($xdotool getactivewindow getwindowname)"
+        if [ -n "$KM_IGNORE_WINDOW" ]; then # TODO
+            windowname="$(xdotool getactivewindow getwindowname)"
             case "$windowname" in
                 $KM_IGNORE_WINDOW)
                     debug "ignoring clipboard because windowname \"$windowname\" matches \"${KM_IGNORE_WINDOW}\""
