@@ -92,7 +92,7 @@ cksums="$(
     printf '%s' "$list" | cut -d']' -f1 | tr -d '[' | awk '{printf "%3d:%s\n", NR, $0}'
 )"
 
-idx="$(echo "$briefs" | "$menuprg" "$@")"
+idx="$(echo "$briefs" | $menuprg "$@")"
 launcher_exit=$?
 
 idx="$(echo "$idx" | cut -d':' -f1)"
